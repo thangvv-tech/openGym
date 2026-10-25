@@ -35,18 +35,8 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install dependencies & Build Frontend for Mobile
         working-directory: frontend
@@ -69,7 +59,7 @@ jobs:
           UNSIGNED="app/build/outputs/apk/sideload/release/app-sideload-release-unsigned.apk"
           mkdir -p ../../dist-apk
 
-          # Android SDK tools
+          # Android SDK tools from GitHub runner environment
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
 
           # Align APK
