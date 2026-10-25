@@ -1,0 +1,125 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'catalogue/**'
+      - 'scripts/catalogue/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install dependencies & Build Frontend for Mobile
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build:mobile
+
+      - name: Make gradlew executable
+        run: chmod +x frontend/android/gradlew
+
+      - name: Build & Package APK (Matching GitLab CI)
+        run: |
+          set -eu
+          VER=$(node -p "require('./frontend/package.json').version")
+          echo "APP_VER=$VER" >> $GITHUB_ENV
+
+          cd frontend/android
+          ./gradlew assembleSideloadRelease --no-daemon
+
+          UNSIGNED="app/build/outputs/apk/sideload/release/app-sideload-release-unsigned.apk"
+          mkdir -p ../../dist-apk
+
+          # Android SDK tools
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+
+          # Align APK
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" ../../dist-apk/aligned.apk
+
+          # Create debug signing key so the APK installs cleanly on any device
+          keytool -genkeypair -v -keystore ../../debug.keystore -alias androiddebugkey \
+            -keypass android -storepass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          # Sign APK
+          "$BT/apksigner" sign \
+            --ks ../../debug.keystore \
+            --ks-pass "pass:android" \
+            --ks-key-alias androiddebugkey \
+            --key-pass "pass:android" \
+            --out "../../dist-apk/openGym-$VER.apk" ../../dist-apk/aligned.apk
+
+          rm -f ../../debug.keystore ../../dist-apk/aligned.apk
+
+          cd ../../dist-apk
+          sha256sum "openGym-$VER.apk" > "openGym-$VER.apk.sha256"
+
+      - name: Extract Release Notes from CHANGELOG
+        run: |
+          awk -v tag="v${{ env.APP_VER }}" '
+            $0 ~ "^## " tag "([^0-9.]|$)" { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' CHANGELOG.md > dist-apk/release-notes.md || true
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openGym-${{ env.APP_VER }}
+          path: |
+            dist-apk/openGym-${{ env.APP_VER }}.apk
+            dist-apk/openGym-${{ env.APP_VER }}.apk.sha256
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.APP_VER }}
+          name: "openGym v${{ env.APP_VER }}"
+          body_path: dist-apk/release-notes.md
+          files: |
+            dist-apk/openGym-${{ env.APP_VER }}.apk
+            dist-apk/openGym-${{ env.APP_VER }}.apk.sha256
+          draft: false
+          prerelease: false
